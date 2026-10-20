@@ -29,6 +29,10 @@ def get_latest_chapter():
 
         text = page.locator("body").inner_text()
 
+        print("URL actual:", page.url)
+print("Enlaces encontrados:", len(links) if "links" in locals() else "pendiente")
+print("URL de la página del título:", MANGA_URL)
+
         # Obtener enlaces disponibles en la página.
         links = page.locator("a").evaluate_all("""
             elements => elements.map(a => ({
