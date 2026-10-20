@@ -30,16 +30,33 @@ def get_latest_chapter():
         text = page.locator("body").inner_text()
 
         print("URL actual:", page.url)
-print("Enlaces encontrados:", len(links) if "links" in locals() else "pendiente")
-print("URL de la página del título:", MANGA_URL)
+        print("URL de la página del título:", MANGA_URL)
 
-        # Obtener enlaces disponibles en la página.
+        # Recopilar los enlaces visibles de la página.
         links = page.locator("a").evaluate_all("""
             elements => elements.map(a => ({
                 text: (a.innerText || "").trim(),
                 url: a.href
             }))
         """)
+
+        print("Enlaces encontrados:", len(links))
+
+        # Registrar enlaces del lector para investigar
+        # cómo MANGA Plus identifica cada capítulo.
+        viewer_links = [
+            link for link in links
+            if "/viewer/" in link["url"]
+        ]
+
+        print("Enlaces del lector:", len(viewer_links))
+
+        for link in viewer_links[:30]:
+            print(
+                "Enlace del lector:",
+                repr(link["text"]),
+                link["url"]
+            )
 
         browser.close()
 
@@ -60,13 +77,14 @@ print("URL de la página del título:", MANGA_URL)
         )
 
     chapter_id, chapter_number, chapter_title = matches[-1]
+
     chapter_number = int(chapter_number)
     chapter_title = chapter_title.strip() if chapter_title else ""
 
     print("Capítulo encontrado:", chapter_number)
     print("Título:", chapter_title)
 
-    # Buscar el enlace directo al capítulo.
+    # Buscar el enlace directo si está disponible.
     chapter_url = ""
 
     for link in links:
@@ -76,8 +94,6 @@ print("URL de la página del título:", MANGA_URL)
         if "/viewer/" not in url:
             continue
 
-        # El enlace debe mencionar el número exacto
-        # del capítulo para evitar seleccionar otro.
         numbers = re.findall(r"\d+", link_text)
 
         if str(chapter_number) in numbers:
@@ -86,11 +102,14 @@ print("URL de la página del título:", MANGA_URL)
 
     if not chapter_url:
         print(
-            "AVISO: No se encontró el enlace directo "
-            "en la lista de enlaces de la página."
+            "AVISO: No se pudo identificar el enlace "
+            "directo a este capítulo."
         )
 
-    print("Enlace directo:", chapter_url or "No encontrado")
+    print(
+        "Enlace directo:",
+        chapter_url or "No encontrado"
+    )
 
     return str(chapter_number), chapter_title, chapter_url
 
@@ -98,8 +117,8 @@ print("URL de la página del título:", MANGA_URL)
 def send_telegram(chapter_number, chapter_title, chapter_url):
     if not chapter_url:
         raise RuntimeError(
-            "No se publicará la notificación porque "
-            "no se encontró el enlace directo al capítulo."
+            "No se enviará la notificación porque no "
+            "se encontró el enlace directo al capítulo."
         )
 
     message = (
@@ -157,7 +176,7 @@ def main():
         )
         return
 
-    # Solo anunciar cuando el número de capítulo cambie.
+    # Anunciar solamente si hay un capítulo nuevo.
     if current_chapter != previous_chapter:
         print("🎉 ¡CAPÍTULO NUEVO!")
 
