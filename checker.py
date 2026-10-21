@@ -7,6 +7,7 @@ from mangaplus import MangaPlus
 from mangaplus.constants import Language, Viewer
 
 TITLE_ID = 200116
+DEVICE_ID = "manga-telegram-github-actions"
 VIEWER_PREFIX = "https://mangaplus.shueisha.co.jp/viewer/"
 STATE_FILE = "last_chapter.txt"
 
@@ -15,7 +16,7 @@ CHANNEL = os.environ["TELEGRAM_CHANNEL"]
 
 
 def get_latest_chapter():
-    print("Consultando MANGA Plus con la biblioteca oficial de Python...")
+    print("Conectando con MANGA Plus...")
 
     client = MangaPlus(
         lang=Language.SPANISH,
@@ -24,22 +25,38 @@ def get_latest_chapter():
     )
 
     try:
+        print("Registrando el dispositivo...")
+        client.register(device_id=DEVICE_ID)
+
+        print("Consultando los detalles del manga...")
         data = client.getTitleDetail(title_id=TITLE_ID)
+
     except Exception as exc:
         raise RuntimeError(
-            f"No se pudo consultar MANGA Plus: {exc}"
+            "No se pudo obtener la información de MANGA Plus. "
+            f"Tipo de error: {type(exc).__name__}. "
+            f"Detalle: {exc}. No se publicará ningún mensaje."
         ) from exc
+
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            "MANGA Plus devolvió una respuesta inesperada. "
+            "No se publicará ningún mensaje."
+        )
 
     detail = data.get("titleDetailView")
 
     if not isinstance(detail, dict):
         raise RuntimeError(
-            "La respuesta no contiene titleDetailView. "
-            f"Claves recibidas: {list(data.keys())}"
+            "No se encontró la información del título en la respuesta. "
+            f"Campos recibidos: {list(data.keys())}"
         )
 
     title_data = detail.get("title") or {}
-    print("Manga:", title_data.get("name", "Nombre no disponible"))
+    print(
+        "Manga:",
+        title_data.get("name", "Nombre no disponible"),
+    )
 
     chapters = {}
 
@@ -86,20 +103,23 @@ def get_latest_chapter():
             }
 
     if not chapters:
-        print("Campos disponibles en titleDetailView:", list(detail.keys()))
         raise RuntimeError(
-            "No se pudieron identificar los números de capítulo. "
-            "No se enviará ningún mensaje."
+            "La consulta respondió, pero no se pudieron identificar "
+            "los números de capítulo. No se enviará ningún mensaje."
         )
 
-    latest = max(chapters.values(), key=lambda item: item["number"])
-    url = VIEWER_PREFIX + latest["id"]
+    latest = max(
+        chapters.values(),
+        key=lambda item: item["number"],
+    )
+
+    chapter_url = VIEWER_PREFIX + latest["id"]
 
     print("Capítulo encontrado:", latest["number_text"])
     print("Título:", latest["title"])
-    print("Enlace:", url)
+    print("Enlace:", chapter_url)
 
-    return latest["number_text"], latest["title"], url
+    return latest["number_text"], latest["title"], chapter_url
 
 
 def send_telegram(number, title, url):
@@ -112,7 +132,10 @@ def send_telegram(number, title, url):
     if title:
         message += f"📚 {title}\n"
 
-    message += f"\n👉 [Leer en MANGA Plus en español]({url})"
+    message += (
+        "\n👉 [Leer en MANGA Plus en español]"
+        f"({url})"
+    )
 
     response = requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
@@ -131,7 +154,9 @@ def send_telegram(number, title, url):
     result = response.json()
 
     if not result.get("ok"):
-        raise RuntimeError("Telegram no confirmó el envío del mensaje.")
+        raise RuntimeError(
+            "Telegram no confirmó el envío del mensaje."
+        )
 
 
 def main():
@@ -150,7 +175,9 @@ def main():
         with open(STATE_FILE, "w", encoding="utf-8") as file:
             file.write(current)
 
-        print("Primera ejecución: capítulo guardado sin publicar.")
+        print(
+            "Primera ejecución: capítulo guardado sin publicar."
+        )
         return
 
     if not re.fullmatch(r"\d+(?:\.\d+)?", previous):
