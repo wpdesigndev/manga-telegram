@@ -1,11 +1,11 @@
 
 import os
 import re
-import time
+import json
 import requests
-from playwright.sync_api import sync_playwright
 
-MANGA_URL = "https://mangaplus.shueisha.co.jp/titles/200116"
+API_URL = "https://jumpg-webapi.tokyo-cdn.com/api/title_detailV3"
+TITLE_ID = "200116"
 VIEWER_PREFIX = "https://mangaplus.shueisha.co.jp/viewer/"
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -14,186 +14,121 @@ STATE_FILE = "last_chapter.txt"
 
 
 def get_latest_chapter():
-    last_error = "No se encontraron capítulos."
+    print("Consultando la API de MANGA Plus...")
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+    response = requests.get(
+        API_URL,
+        params={"title_id": TITLE_ID, "format": "json"},
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://mangaplus.shueisha.co.jp",
+            "Referer": "https://mangaplus.shueisha.co.jp/",
+        },
+        timeout=30,
+    )
 
-        try:
-            for attempt in range(1, 4):
-                page = browser.new_page(
-                    locale="es-ES",
-                    accept_downloads=False
-                )
+    print("Estado HTTP de la API:", response.status_code)
+    response.raise_for_status()
 
-                try:
-                    print(
-                        f"Abriendo MANGA Plus en español "
-                        f"(intento {attempt}/3)..."
-                    )
+    try:
+        data = response.json()
+    except ValueError:
+        raise RuntimeError(
+            "La API no devolvió JSON. Respuesta: "
+            + response.text[:500]
+        )
 
-                    page.goto(
-                        MANGA_URL,
-                        wait_until="domcontentloaded",
-                        timeout=60000
-                    )
+    if "success" not in data:
+        raise RuntimeError(
+            "La API no confirmó la consulta: "
+            + json.dumps(data, ensure_ascii=False)[:1000]
+        )
 
-                    page.wait_for_timeout(10000)
+    detail = data["success"].get("titleDetailView")
+    if not detail:
+        raise RuntimeError(
+            "La respuesta no contiene titleDetailView: "
+            + json.dumps(data, ensure_ascii=False)[:1000]
+        )
 
-                    print("Título de la página:", page.title())
-                    print("URL final:", page.url)
+    title = detail.get("title", {})
+    print("Manga:", title.get("name", "Nombre no disponible"))
+    print("Idioma informado por la API:", title.get("language"))
 
-                    body_text = page.locator("body").inner_text()
-                    print("Texto visible:", body_text[:2000])
+    chapters = []
+    for key in ("firstChapterList", "lastChapterList"):
+        chapters.extend(detail.get(key) or [])
 
-                    # Buscar números de capítulos en el texto visible.
-                    patterns = [
-                        r"#\s*(\d+)\s*[\r\n]+.*?Capítulo\s+\d+",
-                        r"Capítulo\s+(\d+)\s*[:：\-]?\s*([^\r\n]*)",
-                        r"第\s*(\d+)\s*話"
-                    ]
+    # Evitar capítulos repetidos si aparecen en ambas listas.
+    unique = {}
+    for chapter in chapters:
+        chapter_id = str(chapter.get("chapterId", ""))
+        if chapter_id:
+            unique[chapter_id] = chapter
 
-                    matches = []
+    candidates = []
 
-                    for pattern in patterns:
-                        found = re.findall(
-                            pattern,
-                            body_text,
-                            flags=re.IGNORECASE
-                        )
-                        if found:
-                            matches = found
-                            break
+    for chapter_id, chapter in unique.items():
+        name = str(chapter.get("name") or "")
+        subtitle = str(chapter.get("subTitle") or "")
+        label = f"{name} {subtitle}".strip()
 
-                    if not matches:
-                        last_error = (
-                            "La página cargó, pero no se "
-                            "encontraron capítulos en el texto visible."
-                        )
-                        print(last_error)
-                        print("HTML recibido:", page.content()[:3000])
+        # Buscar el número del capítulo en sus nombres.
+        patterns = [
+            r"(?:cap[ií]tulo|chapter|ch\.?)\s*#?\s*(\d+)",
+            r"#\s*(\d+)",
+        ]
 
-                        if attempt < 3:
-                            page.close()
-                            time.sleep(5)
-                            continue
+        number = None
+        for pattern in patterns:
+            match = re.search(pattern, label, re.IGNORECASE)
+            if match:
+                number = int(match.group(1))
+                break
 
-                        break
+        if number is not None:
+            candidates.append({
+                "number": number,
+                "id": chapter_id,
+                "title": subtitle or name,
+                "label": label,
+            })
 
-                    # Normalizar el resultado de los patrones.
-                    last_match = matches[-1]
+    if not candidates:
+        print(
+            "Capítulos recibidos:",
+            json.dumps(chapters, ensure_ascii=False)[:3000]
+        )
+        raise RuntimeError(
+            "La API respondió, pero no pude identificar "
+            "números de capítulos."
+        )
 
-                    if isinstance(last_match, tuple):
-                        chapter_number = int(last_match[0])
-                        chapter_title = (
-                            last_match[1].strip()
-                            if len(last_match) > 1
-                            else ""
-                        )
-                    else:
-                        chapter_number = int(last_match)
-                        chapter_title = ""
+    latest = max(candidates, key=lambda item: item["number"])
 
-                    print("Capítulo encontrado:", chapter_number)
-                    print("Título:", chapter_title or "(sin título)")
+    print("Capítulo identificado:", latest["number"])
+    print("Título:", latest["title"])
+    print("ID del capítulo:", latest["id"])
 
-                    # Buscar enlaces del lector de capítulos.
-                    chapter_url = ""
-
-                    links = page.locator("a[href*='/viewer/']")
-                    for index in range(links.count()):
-                        href = links.nth(index).get_attribute("href")
-                        if href and "/viewer/" in href:
-                            if href.startswith("/"):
-                                chapter_url = (
-                                    "https://mangaplus.shueisha.co.jp"
-                                    + href
-                                )
-                            elif href.startswith("http"):
-                                chapter_url = href
-                            break
-
-                    # Si no aparece un enlace directo en el HTML,
-                    # intentar abrir la tarjeta del capítulo.
-                    if not chapter_url and chapter_title:
-                        try:
-                            target = page.get_by_text(
-                                chapter_title,
-                                exact=False
-                            ).last
-
-                            target.click(timeout=10000)
-                            page.wait_for_timeout(3000)
-
-                            if page.url.startswith(VIEWER_PREFIX):
-                                chapter_url = page.url
-                        except Exception as error:
-                            print(
-                                "No se pudo abrir la tarjeta:",
-                                str(error)
-                            )
-
-                    print(
-                        "Enlace directo:",
-                        chapter_url or "No encontrado"
-                    )
-
-                    if not chapter_url:
-                        last_error = (
-                            "Se encontró un posible capítulo, "
-                            "pero no se pudo verificar su enlace directo."
-                        )
-                        print(last_error)
-
-                        if attempt < 3:
-                            page.close()
-                            time.sleep(5)
-                            continue
-
-                        break
-
-                    return (
-                        str(chapter_number),
-                        chapter_title,
-                        chapter_url
-                    )
-
-                except Exception as error:
-                    last_error = str(error)
-                    print("Error de lectura:", last_error)
-
-                    if attempt < 3:
-                        time.sleep(5)
-
-                finally:
-                    try:
-                        page.close()
-                    except Exception:
-                        pass
-
-            raise RuntimeError(
-                "No se pudo comprobar el último capítulo después "
-                f"de 3 intentos. Detalle: {last_error}"
-            )
-
-        finally:
-            browser.close()
+    return (
+        str(latest["number"]),
+        latest["title"],
+        VIEWER_PREFIX + latest["id"],
+    )
 
 
-def send_telegram(chapter_number, chapter_title, chapter_url):
+def send_telegram(number, title, url):
     message = (
         "📖 *BORUTO - TWO BLUE VORTEX*\n\n"
         "🔥 *Nuevo capítulo disponible*\n\n"
-        f"🔖 Capítulo *{chapter_number}*\n"
+        f"🔖 Capítulo *{number}*\n"
     )
 
-    if chapter_title:
-        message += f"📚 {chapter_title}\n"
+    if title:
+        message += f"📚 {title}\n"
 
-    message += (
-        "\n👉 [Leer capítulo en español en MANGA Plus]"
-        f"({chapter_url})"
-    )
+    message += f"\n👉 [Leer en MANGA Plus]({url})"
 
     response = requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
@@ -211,50 +146,43 @@ def send_telegram(chapter_number, chapter_title, chapter_url):
 
     result = response.json()
     if not result.get("ok"):
-        raise RuntimeError(
-            f"Telegram no confirmó el envío: {result}"
-        )
+        raise RuntimeError("Telegram no confirmó el envío.")
 
 
 def main():
-    current_chapter, chapter_title, chapter_url = (
-        get_latest_chapter()
-    )
-
-    print("Capítulo actual:", current_chapter)
+    current, title, url = get_latest_chapter()
 
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r", encoding="utf-8") as file:
-            previous_chapter = file.read().strip()
+            previous = file.read().strip()
     else:
-        previous_chapter = ""
+        previous = ""
 
-    print("Capítulo guardado:", previous_chapter)
+    print("Capítulo detectado:", current)
+    print("Capítulo guardado:", previous)
 
-    if not previous_chapter:
+    if not previous:
         with open(STATE_FILE, "w", encoding="utf-8") as file:
-            file.write(current_chapter)
+            file.write(current)
+        print("Primera ejecución: capítulo guardado sin publicar.")
+        return
 
-        print(
-            "Primera ejecución: capítulo guardado sin enviar Telegram."
+    if not previous.isdigit():
+        raise RuntimeError(
+            "El archivo last_chapter.txt no contiene "
+            "un número de capítulo válido."
         )
+
+    if int(current) <= int(previous):
+        print("No hay un capítulo numéricamente más reciente.")
         return
 
-    if current_chapter == previous_chapter:
-        print("No hay capítulo nuevo.")
-        return
+    print("Posible capítulo nuevo. Enviando a Telegram...")
+    send_telegram(current, title, url)
 
-    print("¡Posible capítulo nuevo!")
-
-    # Enviar solo cuando el enlace directo ya se haya verificado.
-    send_telegram(
-        current_chapter,
-        chapter_title,
-        chapter_url
-    )
-
+    # Guardar el estado solamente después de confirmar el envío.
     with open(STATE_FILE, "w", encoding="utf-8") as file:
-        file.write(current_chapter)
+        file.write(current)
 
     print("Mensaje enviado y capítulo guardado.")
 
