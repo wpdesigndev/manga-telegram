@@ -1,6 +1,7 @@
 
 import os
 import re
+import time
 import requests
 from playwright.sync_api import sync_playwright
 
@@ -13,95 +14,136 @@ STATE_FILE = "last_chapter.txt"
 
 
 def get_latest_chapter():
+    last_error = None
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
 
-        print("Abriendo MANGA Plus en español...")
+        try:
+            for attempt in range(1, 4):
+                page = browser.new_page()
 
-        page.goto(
-            MANGA_URL,
-            wait_until="networkidle",
-            timeout=60000
-        )
-
-        page.wait_for_timeout(3000)
-        text = page.locator("body").inner_text()
-
-        pattern = (
-            r"#(\d+).*?Capítulo\s+(\d+)"
-            r"(?::\s*(.*?))?(?=\n|$)"
-        )
-
-        matches = re.findall(
-            pattern,
-            text,
-            re.IGNORECASE | re.DOTALL
-        )
-
-        if not matches:
-            browser.close()
-            raise RuntimeError(
-                "No se encontraron capítulos en MANGA Plus."
-            )
-
-        chapter_id, chapter_number, chapter_title = matches[-1]
-        chapter_number = int(chapter_number)
-        chapter_title = (
-            chapter_title.strip() if chapter_title else ""
-        )
-
-        print("Capítulo encontrado:", chapter_number)
-        print("Título:", chapter_title)
-
-        chapter_url = ""
-
-        # Intentar abrir la tarjeta del capítulo.
-        if chapter_title:
-            try:
-                target = page.get_by_text(
-                    chapter_title,
-                    exact=False
-                ).last
-
-                target.click(timeout=10000)
-                page.wait_for_timeout(3000)
-
-                if "/viewer/" in page.url:
-                    chapter_url = page.url
-                else:
+                try:
                     print(
-                        "La página no navegó directamente "
-                        "al lector del capítulo."
+                        f"Abriendo MANGA Plus en español "
+                        f"(intento {attempt}/3)..."
                     )
 
-            except Exception as error:
-                print(
-                    "No se pudo abrir la tarjeta del capítulo:",
-                    str(error)
-                )
+                    page.goto(
+                        MANGA_URL,
+                        wait_until="domcontentloaded",
+                        timeout=60000
+                    )
 
-        # Comprobar si la URL es del lector oficial.
-        if chapter_url and not chapter_url.startswith(
-            "https://mangaplus.shueisha.co.jp/viewer/"
-        ):
-            chapter_url = ""
+                    # Dar tiempo a que la aplicación cargue.
+                    page.wait_for_timeout(10000)
 
-        print(
-            "Enlace directo:",
-            chapter_url or "No encontrado"
-        )
+                    text = page.locator("body").inner_text()
 
-        browser.close()
+                    pattern = (
+                        r"#(\d+).*?Capítulo\s+(\d+)"
+                        r"(?::\s*(.*?))?(?=\n|$)"
+                    )
 
-    return str(chapter_number), chapter_title, chapter_url
+                    matches = re.findall(
+                        pattern,
+                        text,
+                        re.IGNORECASE | re.DOTALL
+                    )
+
+                    if not matches:
+                        last_error = (
+                            "La página cargó, pero no se "
+                            "encontraron capítulos."
+                        )
+                        print(last_error)
+                        print("URL actual:", page.url)
+                        print("Texto visible:", text[:1500])
+
+                        page.close()
+
+                        if attempt < 3:
+                            time.sleep(5)
+                            continue
+
+                        break
+
+                    _, chapter_number, chapter_title = matches[-1]
+
+                    chapter_number = int(chapter_number)
+                    chapter_title = (
+                        chapter_title.strip()
+                        if chapter_title else ""
+                    )
+
+                    print("Capítulo encontrado:", chapter_number)
+                    print("Título:", chapter_title)
+
+                    # Obtener la URL directa del lector en español.
+                    chapter_url = ""
+
+                    if chapter_title:
+                        try:
+                            target = page.get_by_text(
+                                chapter_title,
+                                exact=False
+                            ).last
+
+                            target.click(timeout=10000)
+                            page.wait_for_timeout(3000)
+
+                            if (
+                                page.url.startswith(
+                                    "https://mangaplus.shueisha.co.jp/viewer/"
+                                )
+                            ):
+                                chapter_url = page.url
+
+                        except Exception as error:
+                            print(
+                                "No se pudo abrir la tarjeta:",
+                                str(error)
+                            )
+
+                    print(
+                        "Enlace directo:",
+                        chapter_url or "No encontrado"
+                    )
+
+                    page.close()
+
+                    return (
+                        str(chapter_number),
+                        chapter_title,
+                        chapter_url
+                    )
+
+                except Exception as error:
+                    last_error = str(error)
+                    print("Error de lectura:", last_error)
+
+                    try:
+                        page.close()
+                    except Exception:
+                        pass
+
+                    if attempt < 3:
+                        time.sleep(5)
+
+            raise RuntimeError(
+                "No se pudo leer MANGA Plus después de "
+                f"3 intentos. Último error: {last_error}"
+            )
+
+        finally:
+            browser.close()
 
 
 def send_telegram(chapter_number, chapter_title, chapter_url):
     if not chapter_url:
         raise RuntimeError(
-            "No se enviará la notificación porque no "
-            "se encontró el enlace directo al capítulo."
+            "No se enviará el mensaje porque falta "
+            "el enlace directo al capítulo."
         )
 
     message = (
@@ -118,12 +160,8 @@ def send_telegram(chapter_number, chapter_title, chapter_url):
         f"({chapter_url})"
     )
 
-    url = (
-        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    )
-
     response = requests.post(
-        url,
+        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
         data={
             "chat_id": CHANNEL,
             "text": message,
@@ -145,24 +183,15 @@ def main():
     print("Capítulo actual:", current_chapter)
 
     if os.path.exists(STATE_FILE):
-        with open(
-            STATE_FILE,
-            "r",
-            encoding="utf-8"
-        ) as file:
+        with open(STATE_FILE, "r", encoding="utf-8") as file:
             previous_chapter = file.read().strip()
     else:
         previous_chapter = ""
 
     print("Capítulo guardado:", previous_chapter)
 
-    # Primera ejecución: guardar sin publicar.
     if not previous_chapter:
-        with open(
-            STATE_FILE,
-            "w",
-            encoding="utf-8"
-        ) as file:
+        with open(STATE_FILE, "w", encoding="utf-8") as file:
             file.write(current_chapter)
 
         print(
@@ -171,9 +200,8 @@ def main():
         )
         return
 
-    # Publicar solamente si el capítulo cambió.
     if current_chapter != previous_chapter:
-        print("🎉 ¡CAPÍTULO NUEVO!")
+        print("¡CAPÍTULO NUEVO!")
 
         send_telegram(
             current_chapter,
@@ -181,15 +209,10 @@ def main():
             chapter_url
         )
 
-        with open(
-            STATE_FILE,
-            "w",
-            encoding="utf-8"
-        ) as file:
+        with open(STATE_FILE, "w", encoding="utf-8") as file:
             file.write(current_chapter)
 
         print("Mensaje enviado a Telegram.")
-
     else:
         print("No hay capítulo nuevo.")
 
