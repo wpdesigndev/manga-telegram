@@ -1,7 +1,7 @@
 
 import os
 import re
-import json
+import uuid
 import requests
 
 API_URL = "https://jumpg-webapi.tokyo-cdn.com/api/title_detailV3"
@@ -16,106 +16,139 @@ STATE_FILE = "last_chapter.txt"
 def get_latest_chapter():
     print("Consultando la API de MANGA Plus...")
 
+    params = {
+        "title_id": TITLE_ID,
+        "lang": "eng",
+        "clang": "spa",
+        "country_code": "US",
+        "format": "json",
+    }
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/141.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+        "Origin": "https://mangaplus.shueisha.co.jp",
+        "Referer": "https://mangaplus.shueisha.co.jp/",
+        "Session-Token": str(uuid.uuid4()),
+    }
+
     response = requests.get(
         API_URL,
-        params={"title_id": TITLE_ID, "format": "json"},
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json, text/plain, */*",
-            "Origin": "https://mangaplus.shueisha.co.jp",
-            "Referer": "https://mangaplus.shueisha.co.jp/",
-        },
+        params=params,
+        headers=headers,
         timeout=30,
     )
 
     print("Estado HTTP de la API:", response.status_code)
+    print("URL consultada:", response.url)
+
+    if response.status_code == 403:
+        raise RuntimeError(
+            "MANGA Plus ha rechazado la petición (403). "
+            "Los encabezados y parámetros adicionales no han "
+            "resuelto el bloqueo. No se publicará nada."
+        )
+
     response.raise_for_status()
 
     try:
         data = response.json()
     except ValueError:
         raise RuntimeError(
-            "La API no devolvió JSON. Respuesta: "
-            + response.text[:500]
+            "La respuesta no es JSON. Tipo de contenido: "
+            f"{response.headers.get('Content-Type')}. "
+            f"Inicio de respuesta: {response.text[:300]}"
         )
 
-    if "success" not in data:
+    success = data.get("success")
+    if not isinstance(success, dict):
         raise RuntimeError(
-            "La API no confirmó la consulta: "
-            + json.dumps(data, ensure_ascii=False)[:1000]
+            "La API no devolvió un objeto 'success'. "
+            f"Respuesta: {str(data)[:1000]}"
         )
 
-    detail = data["success"].get("titleDetailView")
-    if not detail:
+    detail = success.get("titleDetailView")
+    if not isinstance(detail, dict):
         raise RuntimeError(
-            "La respuesta no contiene titleDetailView: "
-            + json.dumps(data, ensure_ascii=False)[:1000]
+            "No se encontró titleDetailView en la respuesta. "
+            f"Claves recibidas: {list(success.keys())}"
         )
 
-    title = detail.get("title", {})
+    title = detail.get("title") or {}
     print("Manga:", title.get("name", "Nombre no disponible"))
-    print("Idioma informado por la API:", title.get("language"))
 
-    chapters = []
-    for key in ("firstChapterList", "lastChapterList"):
-        chapters.extend(detail.get(key) or [])
+    chapters_by_id = {}
 
-    # Evitar capítulos repetidos si aparecen en ambas listas.
-    unique = {}
-    for chapter in chapters:
-        chapter_id = str(chapter.get("chapterId", ""))
-        if chapter_id:
-            unique[chapter_id] = chapter
+    for list_name in ("firstChapterList", "lastChapterList"):
+        chapter_list = detail.get(list_name) or []
+
+        if isinstance(chapter_list, list):
+            for chapter in chapter_list:
+                if not isinstance(chapter, dict):
+                    continue
+
+                chapter_id = str(chapter.get("chapterId") or "")
+                if chapter_id:
+                    chapters_by_id[chapter_id] = chapter
 
     candidates = []
 
-    for chapter_id, chapter in unique.items():
+    for chapter_id, chapter in chapters_by_id.items():
         name = str(chapter.get("name") or "")
         subtitle = str(chapter.get("subTitle") or "")
         label = f"{name} {subtitle}".strip()
 
-        # Buscar el número del capítulo en sus nombres.
-        patterns = [
+        match = re.search(
             r"(?:cap[ií]tulo|chapter|ch\.?)\s*#?\s*(\d+)",
-            r"#\s*(\d+)",
-        ]
+            label,
+            re.IGNORECASE,
+        )
 
-        number = None
-        for pattern in patterns:
-            match = re.search(pattern, label, re.IGNORECASE)
-            if match:
-                number = int(match.group(1))
-                break
+        if not match:
+            match = re.search(r"#\s*(\d+)", label)
 
-        if number is not None:
-            candidates.append({
-                "number": number,
-                "id": chapter_id,
-                "title": subtitle or name,
-                "label": label,
-            })
+        if not match:
+            continue
+
+        candidates.append({
+            "number": int(match.group(1)),
+            "id": chapter_id,
+            "title": subtitle or name,
+        })
 
     if not candidates:
         print(
-            "Capítulos recibidos:",
-            json.dumps(chapters, ensure_ascii=False)[:3000]
+            "Campos recibidos:",
+            list(detail.keys()),
+        )
+        print(
+            "Listas de capítulos:",
+            {
+                key: len(detail.get(key) or [])
+                for key in ("firstChapterList", "lastChapterList")
+            },
         )
         raise RuntimeError(
-            "La API respondió, pero no pude identificar "
-            "números de capítulos."
+            "La respuesta llegó, pero no se pudieron identificar "
+            "los números de los capítulos."
         )
 
     latest = max(candidates, key=lambda item: item["number"])
 
-    print("Capítulo identificado:", latest["number"])
-    print("Título:", latest["title"])
-    print("ID del capítulo:", latest["id"])
+    chapter_number = str(latest["number"])
+    chapter_title = latest["title"]
+    chapter_url = VIEWER_PREFIX + latest["id"]
 
-    return (
-        str(latest["number"]),
-        latest["title"],
-        VIEWER_PREFIX + latest["id"],
-    )
+    print("Capítulo encontrado:", chapter_number)
+    print("Título:", chapter_title)
+    print("Enlace directo:", chapter_url)
+
+    return chapter_number, chapter_title, chapter_url
 
 
 def send_telegram(number, title, url):
@@ -128,7 +161,10 @@ def send_telegram(number, title, url):
     if title:
         message += f"📚 {title}\n"
 
-    message += f"\n👉 [Leer en MANGA Plus]({url})"
+    message += (
+        "\n👉 [Leer en MANGA Plus en español]"
+        f"({url})"
+    )
 
     response = requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
@@ -146,7 +182,9 @@ def send_telegram(number, title, url):
 
     result = response.json()
     if not result.get("ok"):
-        raise RuntimeError("Telegram no confirmó el envío.")
+        raise RuntimeError(
+            "Telegram no confirmó el envío del mensaje."
+        )
 
 
 def main():
@@ -164,23 +202,22 @@ def main():
     if not previous:
         with open(STATE_FILE, "w", encoding="utf-8") as file:
             file.write(current)
+
         print("Primera ejecución: capítulo guardado sin publicar.")
         return
 
     if not previous.isdigit():
         raise RuntimeError(
-            "El archivo last_chapter.txt no contiene "
-            "un número de capítulo válido."
+            "last_chapter.txt no contiene un número válido."
         )
 
     if int(current) <= int(previous):
         print("No hay un capítulo numéricamente más reciente.")
         return
 
-    print("Posible capítulo nuevo. Enviando a Telegram...")
+    print("Se detectó un capítulo nuevo.")
     send_telegram(current, title, url)
 
-    # Guardar el estado solamente después de confirmar el envío.
     with open(STATE_FILE, "w", encoding="utf-8") as file:
         file.write(current)
 
