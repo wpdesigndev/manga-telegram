@@ -8,14 +8,14 @@ from mangaplus.constants import Language, Viewer
 
 TITLE_ID = 200116
 VIEWER_PREFIX = "https://mangaplus.shueisha.co.jp/viewer/"
+STATE_FILE = "last_chapter.txt"
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHANNEL = os.environ["TELEGRAM_CHANNEL"]
-STATE_FILE = "last_chapter.txt"
 
 
 def get_latest_chapter():
-    print("Consultando MANGA Plus mediante su cliente de Python...")
+    print("Consultando MANGA Plus con la biblioteca oficial de Python...")
 
     client = MangaPlus(
         lang=Language.SPANISH,
@@ -24,84 +24,82 @@ def get_latest_chapter():
     )
 
     try:
-        response = client.getTitleDetail(title_id=TITLE_ID)
+        data = client.getTitleDetail(title_id=TITLE_ID)
     except Exception as exc:
         raise RuntimeError(
-            f"No se pudo consultar el título en MANGA Plus: {exc}"
+            f"No se pudo consultar MANGA Plus: {exc}"
         ) from exc
 
-    detail = response.get("titleDetailView")
+    detail = data.get("titleDetailView")
+
     if not isinstance(detail, dict):
         raise RuntimeError(
             "La respuesta no contiene titleDetailView. "
-            f"Claves recibidas: {list(response.keys())}"
+            f"Claves recibidas: {list(data.keys())}"
         )
 
     title_data = detail.get("title") or {}
-    manga_name = title_data.get("name", "Boruto: Two Blue Vortex")
-    print("Manga:", manga_name)
+    print("Manga:", title_data.get("name", "Nombre no disponible"))
 
-    chapters_by_id = {}
+    chapters = {}
 
     for list_name in ("firstChapterList", "lastChapterList"):
         chapter_list = detail.get(list_name) or []
 
-        if isinstance(chapter_list, list):
-            for chapter in chapter_list:
-                if not isinstance(chapter, dict):
-                    continue
+        if not isinstance(chapter_list, list):
+            continue
 
-                chapter_id = str(chapter.get("chapterId") or "")
-                if not chapter_id:
-                    continue
+        for chapter in chapter_list:
+            if not isinstance(chapter, dict):
+                continue
 
-                name = str(chapter.get("name") or "")
-                subtitle = str(chapter.get("subTitle") or "")
-                label = f"{name} {subtitle}".strip()
+            chapter_id = str(chapter.get("chapterId") or "")
+            if not chapter_id:
+                continue
 
+            name = str(chapter.get("name") or "")
+            subtitle = str(chapter.get("subTitle") or "")
+            label = f"{name} {subtitle}".strip()
+
+            match = re.search(
+                r"(?:cap[ií]tulo|chapter|ch\.?)\s*#?\s*(\d+(?:\.\d+)?)",
+                label,
+                re.IGNORECASE,
+            )
+
+            if not match:
                 match = re.search(
-                    r"(?:cap[ií]tulo|chapter|ch\.?)\s*#?\s*(\d+(?:\.\d+)?)",
+                    r"#\s*(\d+(?:\.\d+)?)",
                     label,
-                    re.IGNORECASE,
                 )
 
-                if not match:
-                    match = re.search(
-                        r"#\s*(\d+(?:\.\d+)?)",
-                        label,
-                    )
+            if not match:
+                continue
 
-                if not match:
-                    continue
+            number_text = match.group(1)
 
-                number_text = match.group(1)
-                number = float(number_text)
+            chapters[chapter_id] = {
+                "id": chapter_id,
+                "number": float(number_text),
+                "number_text": number_text,
+                "title": subtitle or name,
+            }
 
-                chapters_by_id[chapter_id] = {
-                    "number": number,
-                    "number_text": number_text,
-                    "title": subtitle or name,
-                    "id": chapter_id,
-                }
-
-    if not chapters_by_id:
+    if not chapters:
+        print("Campos disponibles en titleDetailView:", list(detail.keys()))
         raise RuntimeError(
-            "MANGA Plus respondió, pero no se pudieron identificar "
-            "los capítulos. No se enviará ningún mensaje."
+            "No se pudieron identificar los números de capítulo. "
+            "No se enviará ningún mensaje."
         )
 
-    latest = max(
-        chapters_by_id.values(),
-        key=lambda chapter: chapter["number"],
-    )
-
-    chapter_url = VIEWER_PREFIX + latest["id"]
+    latest = max(chapters.values(), key=lambda item: item["number"])
+    url = VIEWER_PREFIX + latest["id"]
 
     print("Capítulo encontrado:", latest["number_text"])
     print("Título:", latest["title"])
-    print("Enlace:", chapter_url)
+    print("Enlace:", url)
 
-    return latest["number_text"], latest["title"], chapter_url
+    return latest["number_text"], latest["title"], url
 
 
 def send_telegram(number, title, url):
@@ -131,6 +129,7 @@ def send_telegram(number, title, url):
     response.raise_for_status()
 
     result = response.json()
+
     if not result.get("ok"):
         raise RuntimeError("Telegram no confirmó el envío del mensaje.")
 
@@ -150,6 +149,7 @@ def main():
     if not previous:
         with open(STATE_FILE, "w", encoding="utf-8") as file:
             file.write(current)
+
         print("Primera ejecución: capítulo guardado sin publicar.")
         return
 
