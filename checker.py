@@ -38,6 +38,12 @@ def get_latest_chapter():
                     # Dar tiempo a que la aplicación cargue.
                     page.wait_for_timeout(10000)
 
+                    print("Título de la página:", page.title())
+print("URL final:", page.url)
+print("Estado del documento:", page.locator("body").count())
+print("HTML recibido:", page.content()[:3000])
+print("Errores de página:", page.locator("body").inner_text()[:500])
+
                     text = page.locator("body").inner_text()
 
                     pattern = (
