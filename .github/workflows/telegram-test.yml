@@ -1,9 +1,9 @@
+
 name: MANGA Plus Checker
 
 on:
   schedule:
     - cron: "*/15 * * * *"
-
   workflow_dispatch:
 
 permissions:
@@ -11,11 +11,9 @@ permissions:
 
 jobs:
   check:
-
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -24,11 +22,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Playwright
+      - name: Install dependencies
         run: |
-          pip install playwright requests
-          playwright install chromium
-          playwright install-deps chromium
+          python -m pip install --upgrade pip
+          pip install requests mangaplus
 
       - name: Check MANGA Plus
         env:
