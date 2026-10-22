@@ -1,5 +1,4 @@
 
-import os
 from mangaplus import MangaPlus
 from mangaplus.constants import Language, Viewer
 
@@ -33,35 +32,31 @@ def main():
         print("Claves principales:", list(data.keys()))
         raise RuntimeError("No se encontró titleDetailView.")
 
-    title_data = detail.get("title") or {}
-    print("Manga:", title_data.get("name", "Nombre desconocido"))
+    title = detail.get("title") or {}
+    print("Manga:", title.get("name", "Nombre desconocido"))
     print("Campos del título:", list(detail.keys()))
 
-    for list_name in ("firstChapterList", "lastChapterList"):
-        items = detail.get(list_name) or []
+    chapters = detail.get("chapterListV2") or []
 
-        print(f"\n--- {list_name} ---")
-        print("Tipo:", type(items).__name__)
+    print("\n--- chapterListV2 ---")
+    print("Tipo:", type(chapters).__name__)
 
-        if isinstance(items, list):
-            print("Cantidad:", len(items))
+    if isinstance(chapters, list):
+        print("Cantidad:", len(chapters))
 
-            for index, item in enumerate(items[:5]):
-                print(f"Elemento {index + 1}:")
+        for index, chapter in enumerate(chapters[:20]):
+            print(f"\nCapítulo/elemento {index + 1}:")
 
-                if isinstance(item, dict):
-                    print("Campos:", list(item.keys()))
-                    print("Datos:", repr(item)[:1200])
-                else:
-                    print("Tipo:", type(item).__name__)
-                    print("Datos:", repr(item)[:500])
-        else:
-            print("Datos:", repr(items)[:1500])
+            if isinstance(chapter, dict):
+                print("Campos:", list(chapter.keys()))
+                print("Datos:", repr(chapter)[:2500])
+            else:
+                print("Tipo:", type(chapter).__name__)
+                print("Datos:", repr(chapter)[:1500])
+    else:
+        print("Datos:", repr(chapters)[:5000])
 
-    print(
-        "\nDiagnóstico terminado. "
-        "No se envió ningún mensaje a Telegram."
-    )
+    print("\nDiagnóstico terminado. No se envió ningún mensaje.")
 
 
 if __name__ == "__main__":
