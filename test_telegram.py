@@ -10,9 +10,9 @@ url = f"https://api.telegram.org/bot{token}/sendMessage"
 message = (
     "📢 ¡Nuevo capítulo disponible!\n\n"
     "📚 Boruto: Two Blue Vortex\n"
-    "📖 Capítulo 38\n\n"
-    "🔗 Leer capítulo en MANGA Plus:\n"
-    "https://mangaplus.shueisha.co.jp/titles/100269\n\n"
+    "📖 Capítulo 38: Sigue a tu corazón\n\n"
+    "🔗 Leer capítulo en español:\n"
+    "https://mangaplus.shueisha.co.jp/viewer/2012986\n\n"
     "🤖 Aviso automático de MANGA Plus"
 )
 
@@ -21,6 +21,7 @@ response = requests.post(
     data={
         "chat_id": channel,
         "text": message,
+        "disable_web_page_preview": False,
     },
     timeout=30,
 )
